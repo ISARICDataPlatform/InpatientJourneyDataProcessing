@@ -194,7 +194,9 @@ complete.data <- patient.data %>%
                                       TRUE ~ NA))  %>%
   mutate(comorb.hiv = case_when(aidshiv_mhyn == 1 ~ TRUE,
                                 aidshiv_mhyn == 2 ~ FALSE,
-                                TRUE ~ NA))
+                                TRUE ~ NA)) %>%
+  # replace nonsensical time to ICU values with NA ICU ever variable
+  mutate(ICU.ever = replace(ICU.ever, ICU.ever & (start.to.ICU < 0 | start.to.ICU > start.to.exit), F))
 
 # this is big and we no longer need it
 rm(patient.data)
@@ -221,7 +223,7 @@ site.numberer <- function(x,y){
 }
 
 # tidy up some site names manually
-`
+
 complete.data$site.name[which(is.na(complete.data$site.name) & startsWith(complete.data$subjid, "00570"))] <- "ApolloHospitalsChennai"
 complete.data$site.name[which(is.na(complete.data$site.name) & startsWith(complete.data$subjid, "F309"))] <- "F309 Marseille Conception"
 complete.data$site.name[which(is.na(complete.data$site.name) & startsWith(complete.data$subjid, "F320"))] <- "F320 Colombes- Louis Mourier"
@@ -395,9 +397,9 @@ nice.symp.cols <- c("Cough",
 comorb.cols <- comorb.cols[order(nice.comorb.cols)]
 comorb.cols <- comorb.cols[c(15,1:14,16:17)]
 symp.cols <- symp.cols[1:21][order(nice.symp.cols)]
-all.comorb.cols.string <- paste(comorb.cols, collapse = " + ")
+all.comorb.cols.string <- paste(comorb.cols[c(1:14, 16:17)], collapse = " + ")
 all.symp.cols.string <- paste(symp.cols, collapse = " + ")
-all.comorb.cols.string.nax <- paste(glue("{comorb.cols}_na_excluded"), collapse = " + ")
+all.comorb.cols.string.nax <- paste(glue("{comorb.cols[c(1:14, 16:17)]}_na_excluded"), collapse = " + ")
 all.symp.cols.string.nax <-paste(glue("{symp.cols}_na_excluded"), collapse = " + ")
 
 # Filter to admission or onset in 2020
@@ -460,8 +462,6 @@ time.to.icu.data <- complete.data %>%
 
 # Data for full hospital stay
 
-# quantile is 46 for all data, 
-# 
 overall.hospital.stay.data <- complete.data %>%
   mutate(last.seen = replace(last.seen, outcome == "unknown", (complete.data %>% filter(outcome=="unknown") %>% pull(exit.date)) -1)) %>%
   mutate(time.to.censor = as.numeric(last.seen - start.date)) %>%
@@ -509,7 +509,6 @@ onset.admission.data.2 <- onset.admission.data.2 %>%
 
 ota.model <- glm(as.formula(paste0("log(onset.to.admission + 1) ~ month.onset + 
                                   symp.n.common + 
-                                  symp.n.gi + 
                                   nice.agegp + 
                                   sex + 
                                   outcome2 +
@@ -569,8 +568,14 @@ CI.effect <- confint(ota.model)
 CI.effect[,1] <- map_dbl(CI.effect[,1], coef.adjust)
 CI.effect[,2] <- map_dbl(CI.effect[,2], coef.adjust)
 
-# Wald test for inclusion of month of admission
-wt <- wald.test(vcov(ota.model), coef(ota.model), 2:9)
+# Wald tests for inclusion of all variables
+variable.indexes <- list(2:10, 11, 12:16, 17, 18, 19:42)
+
+wald.ps <- map(variable.indexes, function(x){
+  wt <- wald.test(vcov(ota.model), coef(ota.model), x)
+  wt
+})
+
 
 # Write the model table
 write_lines(stargazer(ota.model, 
@@ -584,7 +589,7 @@ write_lines(stargazer(ota.model,
                       apply.coef = coef.adjust,
                       covariate.labels = covlabels
 ),
-"tableS4.tex")
+"SuppFile4.tex")
 
 
 #### ICU/HDU admission regression ####
@@ -620,9 +625,8 @@ icu.ever.data.2 <- icu.ever.data.2 %>%
   mutate(Country.2 = fct_relevel(Country.2, "Asia and Oceania"))
 
 icu.ever.model.2 <- glm(as.formula(glue("ICU.ever ~ month.start + 
-                          symp.n.gi +
                           nice.agegp +
-                          sex +
+                          sex*comorb.pregnancy_na_excluded +
                           group.OtoA +
                           outcome2 +
                           {all.comorb.cols.string.nax} +
@@ -714,9 +718,13 @@ CI.effect <- confint.default(icu.ever.model.2)
 CI.effect[,1] <- map_dbl(CI.effect[,1],exp)
 CI.effect[,2] <- map_dbl(CI.effect[,2], exp)
 
-# Wald test for inclusion of month of admission
-wt <- wald.test(vcov(icu.ever.model.2), coef(icu.ever.model.2), 2:9)
+# Wald test for inclusion of all variables
+variable.indexes <- c(list(2:10, 11:15, 16, c(17,18), 19:21, 22), map(seq(23, 53, by= 2), function(x) c(x, x+1)), list(55:72))
 
+wald.ps <- map(variable.indexes, function(x){
+  wt <- wald.test(vcov(icu.ever.model.2)[-c(79,80),-c(79,80)], coef(icu.ever.model.2)[-c(79,80)], x)
+  wt
+})
 # Write the model table
 write_lines(stargazer(icu.ever.model.2, 
                       dep.var.caption = "",
@@ -729,7 +737,7 @@ write_lines(stargazer(icu.ever.model.2,
                       apply.coef = exp,
                       covariate.labels = covlabels
 ),
-"tableS5.tex")
+"SuppFile5.tex")
 
 #### Time to ICU/HDU regression ####
 
@@ -767,9 +775,8 @@ time.to.icu.data.2 <- time.to.icu.data.2 %>%
 
 time.to.ICU.model <- glm(as.formula(glue("log(start.to.ICU + 1) ~ 
                           month.start + 
-                          symp.n.gi +
                           nice.agegp +
-                          sex +
+                          sex*comorb.pregnancy_na_excluded +
                           group.OtoA +
                           outcome2 +
                           {all.comorb.cols.string.nax} +
@@ -857,10 +864,14 @@ CI.effect <- confint.default(time.to.ICU.model)
 CI.effect[,1] <- map_dbl(CI.effect[,1], coef.adjust)
 CI.effect[,2] <- map_dbl(CI.effect[,2], coef.adjust)
 
-# Wald tests for inclusion of month of admission, and age group
-wt <- wald.test(vcov(time.to.ICU.model), coef(time.to.ICU.model), 2:9)
+# Wald tests for inclusion of all variables
 
-wt2 <- wald.test(vcov(time.to.ICU.model), coef(time.to.ICU.model), 12:16)
+variable.indexes <- c(list(2:10, 11:15, 16, c(17,18), 19:21, 22), map(seq(23, 53, by= 2), function(x) c(x, x+1)), list(55:73))
+
+wald.ps <- map(variable.indexes, function(x){
+  wt <- wald.test(vcov(time.to.ICU.model)[-c(74,75),-c(74,75)], coef(time.to.ICU.model)[-c(74,75)], x)
+  wt
+})
 
 
 write_lines(stargazer(time.to.ICU.model, 
@@ -874,7 +885,7 @@ write_lines(stargazer(time.to.ICU.model,
                       apply.coef = coef.adjust,
                       covariate.labels = covlabels
 ),
-"tableS6.tex")
+"SuppFile6.tex")
 
 
 #### Outcome/time to outcome regressions ####
@@ -921,8 +932,7 @@ overall.hospital.stay.data.2 <- overall.hospital.stay.data.2 %>%
 # Logistic model for CFR
 
 logistic.cfr <- glm(as.formula(glue("death ~ (month.start + nice.agegp) * ICU.ever + 
-                          sex +
-                          symp.n.gi +
+                          sex*comorb.pregnancy_na_excluded +
                           group.OtoA +
                           {all.comorb.cols.string.nax} +
                           Country.2"
@@ -934,11 +944,15 @@ CI.cfr <- confint.default(logistic.cfr)
 CI.cfr[,1] <- map_dbl(CI.cfr[,1],exp)
 CI.cfr[,2] <- map_dbl(CI.cfr[,2], exp)
 
-# Wald tests for inclusion of month of admission, and interaction terms
-wt.cfr.time <- wald.test(varb = vcov(logistic.cfr), b = coef(logistic.cfr), Terms = 2:10)
-wt.cfr.intertime <- wald.test(varb = vcov(logistic.cfr), b = coef(logistic.cfr), Terms = 78:86)
-wt.cfr.interage <- wald.test(varb = vcov(logistic.cfr), b = coef(logistic.cfr), Terms = 87:91)
+# Wald tests for inclusion of all variables and interaction terms
 
+variable.indexes <- c(list(2:10, 11:15, 16, 17, c(18,19), 20:22), map(seq(23, 53, by= 2), function(x) c(x, x+1)), list(55:76), list(77:85), list(86:90))
+
+wald.ps <- map(variable.indexes, function(x){
+  wt <- aod::wald.test(vcov(logistic.cfr)[-c(91,92),-c(91,92)], coef(logistic.cfr)[-c(91,92)], x)
+  wt
+  
+})
 
 # the following rows calculate confidence intervals for coefficients with interactions
 
@@ -950,7 +964,7 @@ dof <- nrow(bma.mm) - ncol(bma.mm)
 month.death.lower.cis <- map_dbl(1:9, function(group.no){
   icu.coef <- 16
   coef.alone <- 1 + group.no
-  coef.combo <- 77 + group.no
+  coef.combo <- 76 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -960,18 +974,18 @@ month.death.lower.cis <- map_dbl(1:9, function(group.no){
 }) %>% exp()
 
 
-submatrix <- coefs_var[c(16, 86), c(16, 86)]
+submatrix <- coefs_var[c(16, 85), c(16, 85)]
 temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
 half.ci <- qt(0.975, dof) * temp[1,1]
 
-sum(coef(logistic.cfr)[c(16, 86)]) - half.ci
-sum(coef(logistic.cfr)[c(16, 86)]) + half.ci
+sum(coef(logistic.cfr)[c(16, 85)]) - half.ci
+sum(coef(logistic.cfr)[c(16, 85)]) + half.ci
 
 
 month.death.upper.cis <- map_dbl(1:9, function(group.no){
   icu.coef <- 16
   coef.alone <- 1 + group.no
-  coef.combo <- 77 + group.no
+  coef.combo <- 76 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -983,7 +997,7 @@ month.death.upper.cis <- map_dbl(1:9, function(group.no){
 age.death.lower.cis <- map_dbl(1:5, function(group.no){
   icu.coef <- 16
   coef.alone <- 10 + group.no
-  coef.combo <- 86 + group.no
+  coef.combo <- 85 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -995,7 +1009,7 @@ age.death.lower.cis <- map_dbl(1:5, function(group.no){
 age.death.upper.cis <- map_dbl(1:5, function(group.no){
   icu.coef <- 16
   coef.alone <- 10 + group.no
-  coef.combo <- 86 + group.no
+  coef.combo <- 85 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -1101,8 +1115,7 @@ covlabels <- c("Month of COVID admission (ref: April)\\\\\\hspace{0.3cm}March",
 # Linear regression for time to event where that event is death
 
 linear.time.to.death <- glm(as.formula(glue("log(time.to.event + 1) ~ (month.start + nice.agegp) * ICU.ever + 
-                                    sex + 
-                                    symp.n.gi +
+                                    sex*comorb.pregnancy_na_excluded + 
                                     group.OtoA +
                                     {all.comorb.cols.string.nax} + 
                                     Country.2"
@@ -1124,10 +1137,12 @@ coefs_var <- vcov(linear.time.to.death)
 bma.mm <- model.matrix(linear.time.to.death)
 dof <- nrow(bma.mm) - ncol(bma.mm)
 
+(coef(linear.time.to.death)[2:10] + coef(linear.time.to.death)[77:85]) %>% coef.adjust()
+
 month.death.lower.cis <- map_dbl(1:9, function(group.no){
   icu.coef <- 16
   coef.alone <- 1 + group.no
-  coef.combo <- 77 + group.no
+  coef.combo <- 76 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -1139,7 +1154,7 @@ month.death.lower.cis <- map_dbl(1:9, function(group.no){
 month.death.upper.cis <- map_dbl(1:9, function(group.no){
   icu.coef <- 16
   coef.alone <- 1 + group.no
-  coef.combo <- 77 + group.no
+  coef.combo <- 76 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -1148,14 +1163,12 @@ month.death.upper.cis <- map_dbl(1:9, function(group.no){
   
 }) %>% coef.adjust()
 
-(coef(linear.time.to.death)[11:15] + coef(linear.time.to.death)[87:91]) %>% coef.adjust()
-
-wald.test(varb = vcov(linear.time.to.death), b = coef(linear.time.to.death), Terms = c(11, 87))
+(coef(linear.time.to.death)[11:15] + coef(linear.time.to.death)[86:90]) %>% coef.adjust()
 
 age.death.lower.cis <- map_dbl(1:5, function(group.no){
   icu.coef <- 16
   coef.alone <- 10 + group.no
-  coef.combo <- 86 + group.no
+  coef.combo <- 85 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -1167,7 +1180,7 @@ age.death.lower.cis <- map_dbl(1:5, function(group.no){
 age.death.upper.cis <- map_dbl(1:5, function(group.no){
   icu.coef <- 16
   coef.alone <- 10 + group.no
-  coef.combo <- 86 + group.no
+  coef.combo <- 85 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -1176,13 +1189,12 @@ age.death.upper.cis <- map_dbl(1:5, function(group.no){
   
 }) %>% coef.adjust()
 
-(coef(linear.time.to.death)[11:15] + coef(linear.time.to.death)[87:91]) %>% coef.adjust
+(coef(linear.time.to.death)[11:15] + coef(linear.time.to.death)[86:90]) %>% coef.adjust
 
 # Linear regression for time to event where that event is discharge
 
 linear.time.to.discharge <- glm(as.formula(glue("log(time.to.event + 1) ~ (month.start + nice.agegp) * ICU.ever + 
-                                    sex + 
-                                    symp.n.gi +
+                                    sex*comorb.pregnancy_na_excluded + 
                                     group.OtoA +
                                     {all.comorb.cols.string.nax} + 
                                     Country.2"
@@ -1207,7 +1219,7 @@ dof <- nrow(bma.mm) - ncol(bma.mm)
 month.discharge.lower.cis <- map_dbl(1:9, function(group.no){
   icu.coef <- 16
   coef.alone <- 1 + group.no
-  coef.combo <- 77 + group.no
+  coef.combo <- 76 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -1219,7 +1231,7 @@ month.discharge.lower.cis <- map_dbl(1:9, function(group.no){
 month.discharge.upper.cis <- map_dbl(1:9, function(group.no){
   icu.coef <- 16
   coef.alone <- 1 + group.no
-  coef.combo <- 77 + group.no
+  coef.combo <- 76 + group.no
   
   submatrix <- coefs_var[c(coef.alone, coef.combo), c(icu.coef, coef.combo)]
   temp <- matrix(c(1,1), nrow = 1) %*% submatrix %*% matrix(c(1,1), nrow = 2) %>% sqrt
@@ -1252,6 +1264,7 @@ age.discharge.upper.cis <- map_dbl(1:5, function(group.no){
   
 }) %>% coef.adjust()
 
+(coef(linear.time.to.discharge)[11:15] + coef(linear.time.to.discharge)[86:90]) %>% coef.adjust
 
 # Combine columns and write the regression table
 
